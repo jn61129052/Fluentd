@@ -4,15 +4,18 @@
 import pymongo
 from bson.objectid import ObjectId
 import datetime
-import json
 import re
+import sys
+import time
 
 
 #obj = {u'domain': u'192.168.60.77', u'code': u'404', u'url': u'GET /favicon.ico HTTP/1.1', u'ip': u'192.168.30.24', u'bcode': u'404', u'bsize': u'570', u'nginxtime': u'0.000', u'time': datetime.datetime(2013, 7, 18, 4, 16, 34), u'restime': u'0.000', u'_id': ObjectId('51e76c221d41c81867000020'), u'backend': u'192.168.60.77'}
 class MongoConnection():
-    def __init__(self,host,port):
-        self.host = host
-        self.port = port
+    def __init__(self):
+        self.host = "192.168.60.77"
+        self.port = 27017
+        self.db_name = "nginx"
+        self.table_name = "access.nginx"
         self.ng1_count = 0
         self.be1_count = 0
         self.total_count = 0
@@ -68,7 +71,7 @@ class MongoConnection():
     
     #200请求个数
     def count_too(self,obj):
-        regex = re.compile(r'200')
+        regex = re.compile(r'2\d\d')
         if obj is not None:
             if regex.search(obj["code"]):
                 self.too_count += 1
@@ -85,23 +88,29 @@ class MongoConnection():
         if obj is not None:
             self.total_nginxtime += float(obj["nginxtime"])
             
-    
     #backend响应时间超过3秒的个数
     def count_be3(self,obj):
         if obj is not None:
             if float(obj["restime"]) >= 3.0:
                 self.be3_count += 1
+    #获取5分钟前的时间
+    def five_time(self):
+        start = datetime.datetime.utcnow() - datetime.timedelta(minutes=5)
+        end = datetime.datetime.utcnow()
+        return start,end
 
-    def conn(self,db_name,table_name):
+    def conn(self):
         try:
             self.conn = pymongo.Connection(self.host,self.port)
             if self.conn:
-                self.db = self.conn[db_name]
-                self.cursor = self.db[table_name]
-                for obj in self.cursor.find():
+                self.db = self.conn[self.db_name]
+                self.cursor = self.db[self.table_name]
+                (start,end) = self.five_time()
+                #处理5分钟前的数据,基于域名的测试
+                for obj in self.cursor.find({"time":{"$gte": start, "$lt": end},"domain":"192.168.60.77"}):
                     self.count_ng1(obj)
                     self.count_be1(obj)
-                    self.count_total("192.168.60.77")
+                    self.count_total(self.host)
                     self.backtime_total(obj)
                     self.bodysize_total(obj)
                     self.count_fxx(obj)
@@ -110,13 +119,15 @@ class MongoConnection():
                     self.count_sxx(obj)
                     self.nginxtime_total(obj)
                     self.count_be3(obj)
-                self.createcollection("detail")
+                
+                #插入详情数据库
+                self.insert_detail("detail")
         except Exception,e:
             print e
         finally:
             self.conn.close()
             
-    def createcollection(self,tablename):
+    def insert_detail(self,tablename):
         #插入数据供分析
         self.db[tablename].save({"bodysize_total":self.total_bodysize,
                                  "domain":"192.168.60.77",
@@ -133,11 +144,36 @@ class MongoConnection():
                                  "ngxtime_total":self.total_nginxtime,
                                  "be3_count":self.be1_count
                                  })
+    def Command(self,argv):
+        try:
+            conn = pymongo.Connection(self.host,self.port)
+            if conn:
+                self.db = conn["nginx"]
+                self.cursor = self.db["detail"]
+                for obj in self.cursor.find({},{"total_count":1}).sort([("_id",-1)]).limit(1):
+                        count_total = obj["total_count"]
+                print count_total
+                #域名的总请求数
+                if argv == "total_count":
+                    print count_total
+                #2XX率
+                elif argv == "c200_count":
+                    for obj in self.cursor.find({},{"c200_count":1}).sort([("_id",-1)]).limit(1):
+                        ctwo_count = obj["c200_count"]
+                    print round((float(ctwo_count)*100)/count_total,2)
+                #elif argv == "xx4_count":
+                    #for obj in self.cursor.find({},{"c200_count":1}).sort([("_id",-1)]).limit(1):
+        except Exception,e:
+            print e
+                
         
         
+        
+        
+        
+if __name__ == '__main__':   
+    Conn = MongoConnection()
+    Conn.conn()
+    Conn.Command("c200_count")
 
-    def start(self,obj):
-        self.ng1_count(obj)
-             
-Conn = MongoConnection('192.168.60.77',27017)
-Conn.conn('nginx','access.nginx')
+    
